@@ -36,7 +36,7 @@ SYMBOLS = list(dict.fromkeys(
 ))
 POLL_SECONDS = max(5, int(os.getenv("POLL_SECONDS", "15")))
 TEST_MODE = os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
-API_URL = "https://api.bybit.com/v5/market/kline"
+API_URL = "https://api.bytick.com/v5/market/kline"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("bybit-signal-bot")
@@ -125,8 +125,16 @@ def fetch_5m_candles(symbol):
         },
         timeout=15,
     )
-    response.raise_for_status()
-    payload = response.json()
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Bybit HTTP {response.status_code} на {API_URL}: {response.text[:500]}"
+        )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Bybit повернув не-JSON відповідь HTTP {response.status_code}: {response.text[:300]}"
+        ) from exc
     if payload.get("retCode") != 0:
         raise RuntimeError(
             f"Помилка Bybit API: retCode={payload.get('retCode')} "
