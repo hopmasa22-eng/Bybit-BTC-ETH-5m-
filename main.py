@@ -209,7 +209,10 @@ class SignalEngine:
         return candle_color(candle) if candle else None
 
     def _pattern_start(self, start_ts):
-        """Return GREEN/RED only if #1-#3 match, #1 is last of its run, and #4 is opposite."""
+        """Return GREEN/RED when #1-#3 are consecutive same-color candles and #4 is opposite.
+
+        Candles before #1 may have any color, including the same color as #1-#3.
+        """
         c1 = self.candles.get(start_ts)
         c2 = self.candles.get(start_ts + TIMEFRAME_SECONDS)
         c3 = self.candles.get(start_ts + 2 * TIMEFRAME_SECONDS)
@@ -220,9 +223,6 @@ class SignalEngine:
         if base not in ("GREEN", "RED"):
             return None
         if any(candle_color(c) != base for c in (c2, c3)):
-            return None
-        prior = self.candles.get(start_ts - TIMEFRAME_SECONDS)
-        if prior and candle_color(prior) == base:
             return None
         opposite = "RED" if base == "GREEN" else "GREEN"
         if candle_color(c4) != opposite:
