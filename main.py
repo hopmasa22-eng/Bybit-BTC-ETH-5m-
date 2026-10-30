@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Railway Variables: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, MEXC_SYMBOLS=BTCUSDT,ETHUSDT
+# Railway Variables: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS=BTCUSDT,ETHUSDT
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_IDS = [x.strip() for x in os.getenv("TELEGRAM_CHAT_ID", "").split(",") if x.strip()]
 
@@ -31,15 +31,15 @@ def normalize_symbol(value):
 
 SYMBOLS = list(dict.fromkeys(
     normalize_symbol(s)
-    for s in os.getenv("MEXC_SYMBOLS", DEFAULT_SYMBOLS).split(",")
+    for s in os.getenv("SYMBOLS", os.getenv("MEXC_SYMBOLS", DEFAULT_SYMBOLS)).split(",")
     if s.strip()
 ))
 POLL_SECONDS = max(5, int(os.getenv("POLL_SECONDS", "15")))
 TEST_MODE = os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
-API_URL = "https://contract.mexc.com/api/v1/contract/kline"
+API_URL = "https://api.bybit.com/v5/market/kline"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-log = logging.getLogger("mexc-signal-bot")
+log = logging.getLogger("bybit-signal-bot")
 SESSION = requests.Session()
 SESSION.headers.update({"Cache-Control": "no-cache", "Pragma": "no-cache", "User-Agent": "Mozilla/5.0 (compatible; BTC-ETH-5m-Signal-Bot/1.0)"})
 
@@ -111,38 +111,48 @@ def send_telegram(text):
 
 
 def fetch_5m_candles(symbol):
-    """Fetch native 5-minute USDT perpetual candles from the public MEXC contract API."""
-    now = int(time.time())
-    mexc_symbol = normalize_symbol(symbol)
-    start = now - (300 * TIMEFRAME_SECONDS)
+    """Fetch native 5-minute USDT linear perpetual candles from Bybit V5."""
+    now_ms = int(time.time() * 1000)
+    bybit_symbol = symbol.replace("_", "").upper()
     response = SESSION.get(
-        f"{API_URL}/{mexc_symbol}",
-        params={"interval": "Min5", "start": start, "end": now},
+        API_URL,
+        params={
+            "category": "linear",
+            "symbol": bybit_symbol,
+            "interval": "5",
+            "limit": 300,
+            "end": now_ms,
+        },
         timeout=15,
     )
-    if response.status_code == 403:
-        raise RuntimeError(
-            "MEXC API повернув HTTP 403 Forbidden. Перевірте доступність API з Railway; "
-            f"відповідь сервера: {response.text[:300]}"
-        )
     response.raise_for_status()
     payload = response.json()
-    if payload.get("success") is not True:
-        raise RuntimeError(f"Помилка API MEXC: {payload.get('code', '')} {payload.get('msg', payload.get('message', 'невідома помилка'))}")
-    data = payload.get("data") or {}
-    times = data.get("time") or []
-    opens = data.get("open") or []
-    closes = data.get("close") or []
-    if not times or len(times) != len(opens) or len(times) != len(closes):
-        raise RuntimeError(f"MEXC повернув неповні дані свічок: {str(payload)[:500]}")
+    if payload.get("retCode") != 0:
+        raise RuntimeError(
+            f"Помилка Bybit API: retCode={payload.get('retCode')} "
+            f"retMsg={payload.get('retMsg', 'невідома помилка')}"
+        )
+
+    rows = (payload.get("result") or {}).get("list") or []
+    if not rows:
+        raise RuntimeError(f"Bybit повернув порожній список свічок для {bybit_symbol}")
 
     by_ts = {}
-    for ts, open_price, close_price in zip(times, opens, closes):
-        ts = int(ts)
-        by_ts[ts] = {"ts": ts, "open": float(open_price), "close": float(close_price)}
+    for row in rows:
+        # Bybit V5: [startTime(ms), open, high, low, close, volume, turnover]
+        if len(row) < 5:
+            continue
+        ts = int(row[0]) // 1000
+        by_ts[ts] = {"ts": ts, "open": float(row[1]), "close": float(row[4])}
+
     candles = [by_ts[k] for k in sorted(by_ts)]
-    closed = [c for c in candles if c["ts"] + TIMEFRAME_SECONDS <= now]
-    live = next((c for c in reversed(candles) if c["ts"] <= now < c["ts"] + TIMEFRAME_SECONDS), None)
+    closed = [c for c in candles if c["ts"] + TIMEFRAME_SECONDS <= int(time.time())]
+    now = int(time.time())
+    live = next(
+        (c for c in reversed(candles)
+         if c["ts"] <= now < c["ts"] + TIMEFRAME_SECONDS),
+        None,
+    )
     return closed, live
 
 
@@ -241,16 +251,20 @@ class SignalEngine:
         if not self.initialized:
             self.seed(closed)
             return 0
-        existing = set(self.candles)
-        new = [c for c in closed if c["ts"] not in existing]
+        latest_ts = next(reversed(self.candles), None) if self.candles else None
+        if latest_ts is None:
+            self.seed(closed)
+            return 0
+        new = sorted((c for c in closed if c["ts"] > latest_ts), key=lambda x: x["ts"])
         if not new:
             return 0
-        for candle in sorted(new, key=lambda x: x["ts"]):
+        for candle in new:
             self.candles[candle["ts"]] = candle
             self.candles = OrderedDict(sorted(self.candles.items()))
+            # Evaluate before trimming so the candle being processed is always present.
+            self.evaluate(candle["ts"])
             while len(self.candles) > 250:
                 self.candles.popitem(last=False)
-            self.evaluate(candle["ts"])
         self.state["pending"] = self.pending
         self.state["rule1_waiting"] = self.rule1_waiting
         self.state["last_processed"] = new[-1]["ts"]
@@ -345,14 +359,14 @@ class SignalEngine:
 
 def main():
     if not SYMBOLS:
-        raise RuntimeError("MEXC_SYMBOLS порожній; задайте BTCUSDT,ETHUSDT")
-    log.info("Запуск бота сигналів MEXC Futures | інтервал=%s | перевірка кожні %s с", TIMEFRAME_LABEL, POLL_SECONDS)
+        raise RuntimeError("SYMBOLS порожній; задайте BTCUSDT,ETHUSDT")
+    log.info("Запуск бота сигналів Bybit USDT Linear Futures | інтервал=%s | перевірка кожні %s с", TIMEFRAME_LABEL, POLL_SECONDS)
     log.info("Монети: %s", ", ".join(SYMBOLS))
     log.info("Правило 1: #1-#3 однакові, #4 протилежна, #5-#6 будь-які, #7 як #1, #8 будь-яка, #9 протилежна; результат #10-#15")
     log.info("Правило 2: #1-#3 однакові, #4 протилежна, #5-#6 будь-які, #7 протилежна; результат #8-#14")
     log.info("Telegram налаштовано: %s | кількість чатів: %d", bool(TOKEN), len(CHAT_IDS))
     if TOKEN and CHAT_IDS:
-        send_telegram(f"🤖 БОТ ЗАПУЩЕНО\nMEXC Futures\nМонети: {', '.join(symbol_label(s) for s in SYMBOLS)}\nІнтервал: {TIMEFRAME_LABEL}\nНадсилаються лише сигнали; автоматичні угоди не виконуються.")
+        send_telegram(f"🤖 БОТ ЗАПУЩЕНО\nBybit USDT Linear Futures\nМонети: {', '.join(symbol_label(s) for s in SYMBOLS)}\nІнтервал: {TIMEFRAME_LABEL}\nНадсилаються лише сигнали; автоматичні угоди не виконуються.")
 
     engines = {symbol: SignalEngine(symbol) for symbol in SYMBOLS}
     last_heartbeat = {}
@@ -368,7 +382,7 @@ def main():
                 added = engine.ingest(closed)
                 latest = closed[-1]
                 if added:
-                    log.info("НОВІ ДАНІ | %s | свічок MEXC 5m=%d | закритих=%d | додано=%d | остання=%s %s | відкриття=%s закриття=%s | очікують=%d",
+                    log.info("НОВІ ДАНІ | %s | свічок Bybit 5m=%d | закритих=%d | додано=%d | остання=%s %s | відкриття=%s закриття=%s | очікують=%d",
                              symbol, len(closed), len(closed), added, utc(latest["ts"]), candle_color(latest), latest["open"], latest["close"], len(engine.pending))
                 elif time.time() - last_heartbeat.get(symbol, 0) >= 60:
                     age = max(0, int(time.time() - (latest["ts"] + TIMEFRAME_SECONDS)))
@@ -385,7 +399,7 @@ if __name__ == "__main__":
         print("ТЕСТОВИЙ РЕЖИМ: ПЕРЕВІРКУ ПРОЙДЕНО")
         print("Монети:", ", ".join(SYMBOLS))
         print("Інтервал:", TIMEFRAME_LABEL)
-        print("Джерело даних: MEXC Futures, API URL:", API_URL)
+        print("Джерело даних: Bybit V5 Linear, API URL:", API_URL)
         print("Правило 1: сигнал після №9, результат №10–№15")
         print("Правило 2: сигнал після №7, результат №8–№14")
     else:
