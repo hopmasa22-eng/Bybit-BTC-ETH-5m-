@@ -1,15 +1,16 @@
-# Bybit 5m Telegram Signal Bot
+# BTC/ETH 5m Signal Bot (Binance 1m aggregation)
 
-Data source: Bybit V5 public market API via alternate official hostname `https://api.bytick.com/v5/market/kline`, category `linear`, interval `5` (5 minutes).
-Symbols: `BTCUSDT,ETHUSDT`.
+Бот отримує публічні 1-хвилинні свічки Binance USD-M Futures та об’єднує кожні п’ять у завершену 5-хвилинну свічку. Логіка двох правил сигналів збережена. Автоматичні угоди не виконуються.
 
-## Railway variables
-- `TELEGRAM_BOT_TOKEN` — Telegram bot token
-- `TELEGRAM_CHAT_ID` — chat ID (multiple IDs may be comma-separated)
-- `SYMBOLS` — optional; default `BTCUSDT,ETHUSDT` (do not use MEXC_SYMBOLS)
-- `POLL_SECONDS` — optional; default `15`
-- `TEST_MODE` — optional; `true` prints config only and does not start polling
+## Railway Variables
+- `TELEGRAM_BOT_TOKEN` — токен Telegram-бота
+- `TELEGRAM_CHAT_ID` — ID чату або кілька ID через кому
+- `SYMBOLS=BTCUSDT,ETHUSDT`
+- `POLL_SECONDS=15`
+- `TEST_MODE=false`
+- `BINANCE_KLINE_URL` — необов’язково; за замовчуванням `https://fapi.binance.com/fapi/v1/klines`
 
-Do not put Telegram tokens in source code or commit them to a repository.
+API ключ Binance не потрібен: використовується публічний endpoint. Доступність endpoint залежить від регіональних обмежень і мережі Railway.
 
-The bot only sends alerts; it does not place trades.
+## Формування 5m
+Open — перша 1m; High — максимум п’яти; Low — мінімум п’яти; Close — остання 1m; Volume — сума п’яти. Незавершені 5m свічки не передаються в історію правил. Для попередження Rule 2 поточна часткова 5m свічка формується з уже закритих 1m свічок.
