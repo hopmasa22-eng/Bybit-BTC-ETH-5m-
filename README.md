@@ -1,16 +1,13 @@
-# BTC/ETH 5m Signal Bot (Binance 1m aggregation)
+# Bybit 1m → 5m signal bot
 
-Бот отримує публічні 1-хвилинні свічки Binance USD-M Futures та об’єднує кожні п’ять у завершену 5-хвилинну свічку. Логіка двох правил сигналів збережена. Автоматичні угоди не виконуються.
+The bot fetches 1-minute candles from the Bybit V5 public linear market endpoint and aggregates each complete group of five 1m candles into one 5m candle.
 
-## Railway Variables
-- `TELEGRAM_BOT_TOKEN` — токен Telegram-бота
-- `TELEGRAM_CHAT_ID` — ID чату або кілька ID через кому
-- `SYMBOLS=BTCUSDT,ETHUSDT`
-- `POLL_SECONDS=15`
-- `TEST_MODE=false`
-- `BINANCE_KLINE_URL` — необов’язково; за замовчуванням `https://fapi.binance.com/fapi/v1/klines`
+Railway variables:
+- TELEGRAM_BOT_TOKEN
+- TELEGRAM_CHAT_ID
+- SYMBOLS=BTCUSDT,ETHUSDT
+- POLL_SECONDS=15
+- TEST_MODE=false
+- Optional: BYBIT_KLINE_URL=https://api.bybit.com/v5/market/kline
 
-API ключ Binance не потрібен: використовується публічний endpoint. Доступність endpoint залежить від регіональних обмежень і мережі Railway.
-
-## Формування 5m
-Open — перша 1m; High — максимум п’яти; Low — мінімум п’яти; Close — остання 1m; Volume — сума п’яти. Незавершені 5m свічки не передаються в історію правил. Для попередження Rule 2 поточна часткова 5m свічка формується з уже закритих 1m свічок.
+Important: changing the interval from 5m to 1m does NOT bypass a country/IP restriction. If Railway's outbound IP is blocked by Bybit/CloudFront, the request will still return HTTP 403 and the bot cannot receive candles from that runtime. The code remains Bybit-only; it does not use Binance.

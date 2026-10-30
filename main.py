@@ -36,8 +36,8 @@ SYMBOLS = list(dict.fromkeys(
 ))
 POLL_SECONDS = max(5, int(os.getenv("POLL_SECONDS", "15")))
 TEST_MODE = os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
-API_URL = os.getenv("BINANCE_KLINE_URL", "https://fapi.binance.com/fapi/v1/klines")
-SOURCE_LABEL = "Binance USD-M Futures 1m → 5m"
+API_URL = os.getenv("BYBIT_KLINE_URL", "https://api.bybit.com/v5/market/kline")
+SOURCE_LABEL = "Bybit USDT Perpetual 1m → 5m"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("bybit-signal-bot")
@@ -112,50 +112,48 @@ def send_telegram(text):
 
 
 def fetch_5m_candles(symbol):
-    """Fetch 1-minute Binance USD-M Futures candles and aggregate into closed 5m candles."""
+    """Fetch 1-minute Bybit V5 candles and aggregate them into closed 5m candles."""
     now_ms = int(time.time() * 1000)
     market_symbol = symbol.replace("_", "").upper()
     response = SESSION.get(
         API_URL,
-        params={"symbol": market_symbol, "interval": "1m", "limit": 1500},
+        params={"category": "linear", "symbol": market_symbol, "interval": "1", "limit": 1000, "end": now_ms},
         timeout=20,
     )
     if response.status_code != 200:
         raise RuntimeError(
-            f"Binance HTTP {response.status_code} на {API_URL}: {response.text[:500]}"
+            f"Bybit HTTP {response.status_code} на {API_URL}: {response.text[:500]}"
         )
     try:
-        rows = response.json()
+        payload = response.json()
     except ValueError as exc:
         raise RuntimeError(
-            f"Binance повернув не-JSON відповідь HTTP {response.status_code}: {response.text[:300]}"
+            f"Bybit повернув не-JSON відповідь HTTP {response.status_code}: {response.text[:300]}"
         ) from exc
-    if not isinstance(rows, list) or not rows:
-        raise RuntimeError(f"Binance повернув порожні або некоректні 1m дані для {market_symbol}: {str(rows)[:300]}")
+    if payload.get("retCode") != 0:
+        raise RuntimeError(f"Bybit API error: {payload.get('retCode')} {payload.get('retMsg')}")
+    rows = payload.get("result", {}).get("list", [])
+    if not rows:
+        raise RuntimeError(f"Bybit повернув порожні 1m дані для {market_symbol}")
 
-    # Binance kline: [open_time, open, high, low, close, volume, close_time, ...]
+    # Bybit V5 row: [startTime, open, high, low, close, volume, turnover].
+    now_s = now_ms // 1000
     buckets = {}
     for row in sorted(rows, key=lambda r: int(r[0])):
-        if len(row) < 7:
+        if len(row) < 6:
             continue
         minute_open_ms = int(row[0])
-        minute_close_ms = int(row[6])
-        # Ignore the currently-forming 1m candle.
-        if minute_close_ms >= now_ms:
-            continue
         minute_ts = minute_open_ms // 1000
+        # Do not use the currently-forming 1m candle.
+        if minute_ts + 60 > now_s:
+            continue
         bucket_ts = (minute_ts // TIMEFRAME_SECONDS) * TIMEFRAME_SECONDS
         item = buckets.get(bucket_ts)
         o, h, low, c, vol = float(row[1]), float(row[2]), float(row[3]), float(row[4]), float(row[5])
         if item is None:
             buckets[bucket_ts] = {
-                "ts": bucket_ts,
-                "open": o,
-                "high": h,
-                "low": low,
-                "close": c,
-                "volume": vol,
-                "minute_count": 1,
+                "ts": bucket_ts, "open": o, "high": h, "low": low,
+                "close": c, "volume": vol, "minute_count": 1,
                 "last_minute_ts": minute_ts,
             }
         else:
@@ -166,22 +164,18 @@ def fetch_5m_candles(symbol):
             item["minute_count"] += 1
             item["last_minute_ts"] = max(item["last_minute_ts"], minute_ts)
 
-    now_s = now_ms // 1000
-    # Only complete 5m buckets with all five 1m candles are accepted.
     candles = [buckets[k] for k in sorted(buckets)
                if buckets[k]["minute_count"] == 5
                and buckets[k]["last_minute_ts"] == k + 4 * 60
                and k + TIMEFRAME_SECONDS <= now_s]
     if not candles:
-        raise RuntimeError(f"Binance не повернув повних закритих 5m свічок для {market_symbol}")
-    # There is intentionally no live 5m candle: PRE for rule 2 is evaluated
-    # from the current partial 5m aggregate built from completed 1m candles.
+        raise RuntimeError(f"Bybit не повернув повних закритих 5m свічок для {market_symbol}")
+
+    # Partial current 5m aggregate is used only for the Rule 2 PRE check.
     current_bucket = (now_s // TIMEFRAME_SECONDS) * TIMEFRAME_SECONDS
-    live = buckets.get(current_bucket)
-    if live and live["minute_count"] >= 1:
-        live = {"ts": live["ts"], "open": live["open"], "close": live["close"]}
-    else:
-        live = None
+    live_bucket = buckets.get(current_bucket)
+    live = ({"ts": live_bucket["ts"], "open": live_bucket["open"], "close": live_bucket["close"]}
+            if live_bucket else None)
     return candles, live
 
 
@@ -389,13 +383,13 @@ class SignalEngine:
 def main():
     if not SYMBOLS:
         raise RuntimeError("SYMBOLS порожній; задайте BTCUSDT,ETHUSDT")
-    log.info("Запуск бота сигналів Binance USD-M Futures (1m → 5m) | інтервал=%s | перевірка кожні %s с", TIMEFRAME_LABEL, POLL_SECONDS)
+    log.info("Запуск бота сигналів Bybit USDT Perpetual (1m → 5m) | інтервал=%s | перевірка кожні %s с", TIMEFRAME_LABEL, POLL_SECONDS)
     log.info("Монети: %s", ", ".join(SYMBOLS))
     log.info("Правило 1: #1-#3 однакові, #4 протилежна, #5-#6 будь-які, #7 як #1, #8 будь-яка, #9 протилежна; результат #10-#15")
     log.info("Правило 2: #1-#3 однакові, #4 протилежна, #5-#6 будь-які, #7 протилежна; результат #8-#14")
     log.info("Telegram налаштовано: %s | кількість чатів: %d", bool(TOKEN), len(CHAT_IDS))
     if TOKEN and CHAT_IDS:
-        send_telegram(f"🤖 БОТ ЗАПУЩЕНО\nBinance USD-M Futures (1m → 5m)\nМонети: {', '.join(symbol_label(s) for s in SYMBOLS)}\nІнтервал: {TIMEFRAME_LABEL}\nНадсилаються лише сигнали; автоматичні угоди не виконуються.")
+        send_telegram(f"🤖 БОТ ЗАПУЩЕНО\nBybit USDT Perpetual (1m → 5m)\nМонети: {', '.join(symbol_label(s) for s in SYMBOLS)}\nІнтервал: {TIMEFRAME_LABEL}\nНадсилаються лише сигнали; автоматичні угоди не виконуються.")
 
     engines = {symbol: SignalEngine(symbol) for symbol in SYMBOLS}
     last_heartbeat = {}
@@ -406,7 +400,7 @@ def main():
                 if live:
                     engine.maybe_pre_alert(live)
                 if not closed:
-                    log.warning("%s | Binance поки не повернув закритих свічок %s", symbol, TIMEFRAME_LABEL)
+                    log.warning("%s | Bybit поки не повернув закритих свічок %s", symbol, TIMEFRAME_LABEL)
                     continue
                 added = engine.ingest(closed)
                 latest = closed[-1]
@@ -428,7 +422,7 @@ if __name__ == "__main__":
         print("ТЕСТОВИЙ РЕЖИМ: ПЕРЕВІРКУ ПРОЙДЕНО")
         print("Монети:", ", ".join(SYMBOLS))
         print("Інтервал:", TIMEFRAME_LABEL, "(формується з 1m свічок)")
-        print("Джерело даних: Binance USD-M Futures 1m → 5m, API URL:", API_URL)
+        print("Джерело даних: Bybit USDT Perpetual 1m → 5m, API URL:", API_URL)
         print("Правило 1: сигнал після №9, результат №10–№15")
         print("Правило 2: сигнал після №7, результат №8–№14")
     else:
