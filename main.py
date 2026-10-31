@@ -95,15 +95,17 @@ def send_telegram(text):
     success_count = 0
     for chat_id in CHAT_IDS:
         try:
+            api_started = time.perf_counter()
             response = SESSION.post(
                 f"https://api.telegram.org/bot{TOKEN}/sendMessage",
                 json={"chat_id": chat_id, "text": text},
                 timeout=15,
             )
+            api_response_ms = round((time.perf_counter() - api_started) * 1000, 1)
             payload = response.json()
             if response.ok and payload.get("ok"):
                 success_count += 1
-                log.info("TELEGRAM SENT OK | chat=%s", chat_id)
+                log.info("TELEGRAM SENT OK | chat=%s | api_response_ms=%s", chat_id, api_response_ms)
             else:
                 log.error("TELEGRAM ERROR | chat=%s | status=%s | body=%s", chat_id, response.status_code, response.text[:300])
         except Exception:
