@@ -92,24 +92,61 @@ def send_telegram(text):
     if not TOKEN or not CHAT_IDS:
         log.error("Telegram не налаштовано: додайте TELEGRAM_BOT_TOKEN і TELEGRAM_CHAT_ID у змінні Railway")
         return False
+
     success_count = 0
+
     for chat_id in CHAT_IDS:
         try:
+            send_start = datetime.now(timezone.utc)
             api_started = time.perf_counter()
+
+            log.info(
+                "SEND_START | utc=%s | chat=%s | text=%s",
+                send_start.isoformat(timespec="milliseconds"),
+                chat_id,
+                text.splitlines()[0][:80] if text else ""
+            )
+
             response = SESSION.post(
                 f"https://api.telegram.org/bot{TOKEN}/sendMessage",
                 json={"chat_id": chat_id, "text": text},
                 timeout=15,
             )
-            api_response_ms = round((time.perf_counter() - api_started) * 1000, 1)
-            payload = response.json()
+
+            api_response_ms = round(
+                (time.perf_counter() - api_started) * 1000, 1
+            )
+            send_done = datetime.now(timezone.utc)
+
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+
             if response.ok and payload.get("ok"):
                 success_count += 1
-                log.info("TELEGRAM SENT OK | chat=%s | api_response_ms=%s", chat_id, api_response_ms)
+                message_id = payload.get("result", {}).get("message_id")
+
+                log.info(
+                    "SEND_DONE | utc=%s | chat=%s | message_id=%s | API_MS=%.1f",
+                    send_done.isoformat(timespec="milliseconds"),
+                    chat_id,
+                    message_id,
+                    api_response_ms
+                )
             else:
-                log.error("TELEGRAM ERROR | chat=%s | status=%s | body=%s", chat_id, response.status_code, response.text[:300])
+                log.error(
+                    "SEND_ERROR | utc=%s | chat=%s | API_MS=%.1f | status=%s | body=%s",
+                    send_done.isoformat(timespec="milliseconds"),
+                    chat_id,
+                    api_response_ms,
+                    response.status_code,
+                    response.text[:300]
+                )
+
         except Exception:
             log.exception("TELEGRAM EXCEPTION | chat=%s", chat_id)
+
     return success_count == len(CHAT_IDS)
 
 
