@@ -55,7 +55,7 @@ def load_state(path):
     except FileNotFoundError:
         return {"last_processed": None, "pending": [], "rule1_waiting": []}
     except Exception as exc:
-        log.warning("ÐÐµ Ð²Ð´Ð°Ð»Ð¾ÑÑ Ð¿ÑÐ¾ÑÐ¸ÑÐ°ÑÐ¸ ÑÑÐ°Ð½ %s (%s). ÐÐ¾ÑÐ¸Ð½Ð°ÑÐ¼Ð¾ Ð· ÑÐ¸ÑÑÐ¾Ð³Ð¾ ÑÑÐ°Ð½Ñ.", path, exc)
+        log.warning("Не вдалося прочитати стан %s (%s). Починаємо з чистого стану.", path, exc)
         return {"last_processed": None, "pending": [], "rule1_waiting": []}
 
 def save_state(state, path):
@@ -66,7 +66,7 @@ def save_state(state, path):
 
 def send_telegram(text):
     if not TOKEN or not CHAT_IDS:
-        log.error("Telegram Ð½Ðµ Ð½Ð°Ð»Ð°ÑÑÐ¾Ð²Ð°Ð½Ð¾: Ð´Ð¾Ð´Ð°Ð¹ÑÐµ TELEGRAM_BOT_TOKEN Ñ TELEGRAM_CHAT_ID Ñ Railway.")
+        log.error("Telegram не налаштовано: додайте TELEGRAM_BOT_TOKEN і TELEGRAM_CHAT_ID у Railway.")
         return False
     success_count = 0
     for chat_id in CHAT_IDS:
@@ -91,17 +91,17 @@ def fetch_5m_candles(symbol):
     now_s = int(time.time())
     response = SESSION.get(url, params={"interval": "Min5", "limit": 500, "end": now_s}, timeout=20)
     if response.status_code != 200:
-        raise RuntimeError(f"MEXC HTTP {response.status_code} Ð½Ð° {response.url}: {response.text[:500]}")
+        raise RuntimeError(f"MEXC HTTP {response.status_code} на {response.url}: {response.text[:500]}")
     try:
         payload = response.json()
     except ValueError as exc:
-        raise RuntimeError(f"MEXC Ð¿Ð¾Ð²ÐµÑÐ½ÑÐ² Ð½Ðµ-JSON Ð²ÑÐ´Ð¿Ð¾Ð²ÑÐ´Ñ HTTP {response.status_code}: {response.text[:300]}") from exc
+        raise RuntimeError(f"MEXC повернув не-JSON відповідь HTTP {response.status_code}: {response.text[:300]}") from exc
     if not payload.get("success"):
         raise RuntimeError(f"MEXC API error: code={payload.get('code')}; message={payload.get('msg') or payload.get('message')}")
     data = payload.get("data") or {}
     required = ("time", "open", "high", "low", "close")
     if not isinstance(data, dict) or any(k not in data for k in required):
-        raise RuntimeError(f"MEXC: Ð½ÐµÐ¾ÑÑÐºÑÐ²Ð°Ð½Ð¸Ð¹ ÑÐ¾ÑÐ¼Ð°Ñ ÑÐ²ÑÑÐ¾Ðº Ð´Ð»Ñ {market_symbol}: {str(data)[:300]}")
+        raise RuntimeError(f"MEXC: неочікуваний формат свічок для {market_symbol}: {str(data)[:300]}")
     times, opens, highs, lows, closes = (data.get(k, []) for k in ("time", "open", "high", "low", "close"))
     volumes = data.get("vol", [0] * len(times))
     count = min(len(times), len(opens), len(highs), len(lows), len(closes), len(volumes))
@@ -115,7 +115,7 @@ def fetch_5m_candles(symbol):
         elif ts <= now_s < ts + TIMEFRAME_SECONDS:
             live = {"ts": ts, "open": c["open"], "close": c["close"]}
     candles.sort(key=lambda c: c["ts"])
-    if not candles: raise RuntimeError(f"MEXC Ð½Ðµ Ð¿Ð¾Ð²ÐµÑÐ½ÑÐ² Ð·Ð°ÐºÑÐ¸ÑÐ¸Ñ 5m ÑÐ²ÑÑÐ¾Ðº Ð´Ð»Ñ {market_symbol}")
+    if not candles: raise RuntimeError(f"MEXC не повернув закритих 5m свічок для {market_symbol}")
     return candles, live
 
 class SignalEngine:
@@ -164,12 +164,12 @@ class SignalEngine:
         return "LONG" if base == "GREEN" else "SHORT"
 
     def _message(self, kind, direction, rule, start_ts, extra=""):
-        heading = {"warning": "â ï¸ ÐÐÐÐÐ ÐÐÐÐÐÐÐ¯", "signal": f"ð Ð¡ÐÐÐÐÐ {direction}",
-                   "win": "â WIN", "loss": "â LOSS"}[kind]
-        parts = [heading, f"{symbol_label(self.symbol)}, Ñ'ÑÑÐµÑÑÐ¸", f"ÐÐ½ÑÐµÑÐ²Ð°Ð»: {TIMEFRAME_LABEL}",
-                 f"ÐÑÐ°Ð²Ð¸Ð»Ð¾: {rule}", f"ÐÐ¾ÑÐ°ÑÐ¾Ðº Ð¿Ð°ÑÐµÑÐ½Ñ: {kyiv(start_ts)} Ð·Ð° ÐºÐ¸ÑÐ²ÑÑÐºÐ¸Ð¼ ÑÐ°ÑÐ¾Ð¼"]
+        heading = {"warning": "⚠️ ПОПЕРЕДЖЕННЯ", "signal": f"🔔 СИГНАЛ {direction}",
+                   "win": "✅ WIN", "loss": "❌ LOSS"}[kind]
+        parts = [heading, f"{symbol_label(self.symbol)}, ф'ючерси", f"Інтервал: {TIMEFRAME_LABEL}",
+                 f"Правило: {rule}", f"Початок патерну: {kyiv(start_ts)} за київським часом"]
         if extra: parts.append(extra)
-        if kind == "signal": parts.append("Ð¦Ðµ Ð»Ð¸ÑÐµ ÑÐ¸Ð³Ð½Ð°Ð». ÐÐ²ÑÐ¾Ð¼Ð°ÑÐ¸ÑÐ½Ñ ÑÐ³Ð¾Ð´Ð¸ Ð½Ðµ Ð²Ð¸ÐºÐ¾Ð½ÑÑÑÑÑÑ.")
+        if kind == "signal": parts.append("Це лише сигнал. Автоматичні угоди не виконуються.")
         return "\n".join(parts)
 
     def maybe_pre_alert(self, live_candle):
@@ -185,7 +185,7 @@ class SignalEngine:
         if candle_color(live_candle) != expected: return
         direction = self._direction(base)
         msg = self._message("warning", direction, 2, start_ts,
-            f"Ð¡Ð²ÑÑÐºÐ° â8 ÑÐ¾ÑÐ¼ÑÑÑÑÑÑ ÑÐ° Ð·Ð°ÑÐ°Ð· {expected}. Ð¡Ð¸Ð³Ð½Ð°Ð» Ð¾ÑÑÐºÑÑÑÑÑÑ Ð·Ð° 5 ÑÐµÐºÑÐ½Ð´ Ð´Ð¾ Ð·Ð°ÐºÑÐ¸ÑÑÑ, ÑÐºÑÐ¾ ÐºÐ¾Ð»ÑÑ Ð·Ð±ÐµÑÐµÐ¶ÐµÑÑÑÑ.")
+            f"Свічка №8 формується та зараз {expected}. Сигнал очікується за 5 секунд до закриття, якщо колір збережеться.")
         log.info("PRE RULE 2 | %s | %s | start=%s", self.symbol, direction, utc(start_ts))
         if send_telegram(msg): self.pre_sent.add(live_ts)
 
@@ -207,7 +207,7 @@ class SignalEngine:
             return
         direction = self._direction(base)
         msg = self._message("signal", direction, 2, start_ts,
-            "Ð¡Ð¸Ð³Ð½Ð°Ð» Ð·Ð° 5 ÑÐµÐºÑÐ½Ð´ Ð´Ð¾ Ð·Ð°ÐºÑÐ¸ÑÑÑ ÑÐ²ÑÑÐºÐ¸ â8. ÐÐ¾Ð»ÑÑ Ð¿ÐµÑÐµÐ²ÑÑÐµÐ½Ð¾ Ð² Ð¼Ð¾Ð¼ÐµÐ½Ñ Ð½Ð°Ð´ÑÐ¸Ð»Ð°Ð½Ð½Ñ.")
+            "Сигнал за 5 секунд до закриття свічки №8. Колір перевірено в момент надсилання.")
         if send_telegram(msg):
             self.pending.append({"rule": 2, "start_ts": start_ts, "signal_ts": live_ts,
                                  "direction": direction, "result_start_number": 9, "result_end_number": 14})
@@ -252,7 +252,7 @@ class SignalEngine:
         direction = self._direction(base)
         text = self._message(
             "signal", direction, 1, matching["start_ts"],
-            "Ð¡Ð¸Ð³Ð½Ð°Ð» Ð·Ð° 5 ÑÐµÐºÑÐ½Ð´ Ð´Ð¾ Ð·Ð°ÐºÑÐ¸ÑÑÑ ÑÐ²ÑÑÐºÐ¸ â9. ÐÐ¾Ð»ÑÑ Ð¿ÐµÑÐµÐ²ÑÑÐµÐ½Ð¾ Ð² Ð¼Ð¾Ð¼ÐµÐ½Ñ Ð½Ð°Ð´ÑÐ¸Ð»Ð°Ð½Ð½Ñ."
+            "Сигнал за 5 секунд до закриття свічки №9. Колір перевірено в момент надсилання."
         )
         if send_telegram(text):
             self.pending.append({
@@ -305,7 +305,7 @@ class SignalEngine:
             if number > maximum: continue
             if current_color == wanted:
                 send_telegram(self._message("win", setup["direction"], setup["rule"], setup["start_ts"],
-                                            f"Ð ÐµÐ·ÑÐ»ÑÑÐ°ÑÐ½Ð° ÑÐ²ÑÑÐºÐ°: â{number}"))
+                                            f"Результатна свічка: №{number}"))
                 log.info("WIN | %s | rule=%s | %s | candle #%d",
                          self.symbol, setup["rule"], setup["direction"], number)
                 continue
@@ -316,10 +316,10 @@ class SignalEngine:
                 expected_count = maximum - setup["result_start_number"] + 1
                 if len(window) == expected_count and all(c == opposite for c in window):
                     send_telegram(self._message("loss", setup["direction"], setup["rule"], setup["start_ts"],
-                        f"Ð£ÑÑ ÑÐ²ÑÑÐºÐ¸ â{setup['result_start_number']}ââ{maximum} â {opposite}."))
+                        f"Усі свічки №{setup['result_start_number']}–№{maximum} — {opposite}."))
                     log.info("LOSS | %s | rule=%s | %s", self.symbol, setup["rule"], setup["direction"])
                 else:
-                    log.info("NO STRICT WIN/LOSS | %s | rule=%s | Ñ Ð²ÑÐºÐ½Ñ Ñ DOJI Ð°Ð±Ð¾ Ð½ÐµÐ¿Ð¾Ð²Ð½Ñ Ð´Ð°Ð½Ñ",
+                    log.info("NO STRICT WIN/LOSS | %s | rule=%s | у вікні є DOJI або неповні дані",
                              self.symbol, setup["rule"])
                 continue
             keep.append(setup)
@@ -342,7 +342,7 @@ class SignalEngine:
                              self.symbol)
         self.rule1_waiting = waiting_keep
 
-        # RULE 1 warning on candle #8 close â unchanged.
+        # RULE 1 warning on candle #8 close — unchanged.
         start8_ts = ts - 7 * TIMEFRAME_SECONDS
         base8 = self._pattern_start(start8_ts)
         if base8 is not None:
@@ -350,23 +350,23 @@ class SignalEngine:
             if c7_color == base8 and not any(p.get("start_ts") == start8_ts for p in self.rule1_waiting):
                 direction = self._direction(base8)
                 warning = self._message("warning", direction, 1, start8_ts,
-                    "Ð¡Ð²ÑÑÐºÐ° â8 Ð·Ð°ÐºÑÐ¸Ð»Ð°ÑÑ. Ð¯ÐºÑÐ¾ ÑÐ²ÑÑÐºÐ° â9 Ð·Ð°ÐºÑÐ¸ÑÑÑÑÑ Ð¿Ð¾ÑÑÑÐ±Ð½Ð¸Ð¼ ÐºÐ¾Ð»ÑÐ¾ÑÐ¾Ð¼, Ð±ÑÐ´Ðµ Ð½Ð°Ð´ÑÑÐ»Ð°Ð½Ð¾ ÑÐ¸Ð³Ð½Ð°Ð».")
+                    "Свічка №8 закрилася. Якщо свічка №9 закриється потрібним кольором, буде надіслано сигнал.")
                 if send_telegram(warning):
                     self.rule1_waiting.append({"start_ts": start8_ts, "base_color": base8, "warning_ts": ts})
                     log.info("PRE RULE 1 | %s | %s | start=%s",
                              self.symbol, direction, utc(start8_ts))
 
 def main():
-    if not SYMBOLS: raise RuntimeError("SYMBOLS Ð¿Ð¾ÑÐ¾Ð¶Ð½ÑÐ¹; Ð·Ð°Ð´Ð°Ð¹ÑÐµ BTCUSDT,ETHUSDT")
-    log.info("ÐÐ°Ð¿ÑÑÐº Ð±Ð¾ÑÐ° MEXC native 5m | Ð¿ÐµÑÐµÐ²ÑÑÐºÐ° ÐºÐ¾Ð¶Ð½Ñ %s Ñ", POLL_SECONDS)
-    log.info("ÐÐ¾Ð½ÐµÑÐ¸: %s", ", ".join(SYMBOLS))
-    log.info("ÐÑÐ°Ð²Ð¸Ð»Ð¾ 1: PRE Ð¿ÑÑÐ»Ñ Ð·Ð°ÐºÑÐ¸ÑÑÑ #8; SIGNAL Ð·Ð° 5 Ñ Ð´Ð¾ Ð·Ð°ÐºÑÐ¸ÑÑÑ #9; ÑÐµÐ·ÑÐ»ÑÑÐ°Ñ #10-#15")
-    log.info("ÐÑÐ°Ð²Ð¸Ð»Ð¾ 2: #1-#3 Ð¾Ð´Ð½Ð°ÐºÐ¾Ð²Ñ, #4 Ð¿ÑÐ¾ÑÐ¸Ð»ÐµÐ¶Ð½Ð°, #5-#6 Ð±ÑÐ´Ñ-ÑÐºÑ, #7-#8 Ð¿ÑÐ¾ÑÐ¸Ð»ÐµÐ¶Ð½Ñ; PRE Ð½Ð° #8; SIGNAL Ð·Ð° 5 Ñ Ð´Ð¾ Ð·Ð°ÐºÑÐ¸ÑÑÑ #8; ÑÐµÐ·ÑÐ»ÑÑÐ°Ñ #9-#14")
-    log.info("Telegram Ð½Ð°Ð»Ð°ÑÑÐ¾Ð²Ð°Ð½Ð¾: %s | ÑÐ°ÑÑÐ²: %d", bool(TOKEN), len(CHAT_IDS))
+    if not SYMBOLS: raise RuntimeError("SYMBOLS порожній; задайте BTCUSDT,ETHUSDT")
+    log.info("Запуск бота MEXC native 5m | перевірка кожні %s с", POLL_SECONDS)
+    log.info("Монети: %s", ", ".join(SYMBOLS))
+    log.info("Правило 1: PRE після закриття #8; SIGNAL за 5 с до закриття #9; результат #10-#15")
+    log.info("Правило 2: #1-#3 однакові, #4 протилежна, #5-#6 будь-які, #7-#8 протилежні; PRE на #8; SIGNAL за 5 с до закриття #8; результат #9-#14")
+    log.info("Telegram налаштовано: %s | чатів: %d", bool(TOKEN), len(CHAT_IDS))
     if TOKEN and CHAT_IDS:
-        send_telegram(f"ð¤ ÐÐÐ¢ ÐÐÐÐ£Ð©ÐÐÐ\nMEXC USDT Perpetual (native 5m)\n"
-                      f"ÐÐ¾Ð½ÐµÑÐ¸: {', '.join(symbol_label(s) for s in SYMBOLS)}\n"
-                      f"ÐÐ½ÑÐµÑÐ²Ð°Ð»: {TIMEFRAME_LABEL}\nÐÐ°Ð´ÑÐ¸Ð»Ð°ÑÑÑÑÑ Ð»Ð¸ÑÐµ ÑÐ¸Ð³Ð½Ð°Ð»Ð¸; Ð°Ð²ÑÐ¾Ð¼Ð°ÑÐ¸ÑÐ½Ñ ÑÐ³Ð¾Ð´Ð¸ Ð½Ðµ Ð²Ð¸ÐºÐ¾Ð½ÑÑÑÑÑÑ.")
+        send_telegram(f"🤖 БОТ ЗАПУЩЕНО\nMEXC USDT Perpetual (native 5m)\n"
+                      f"Монети: {', '.join(symbol_label(s) for s in SYMBOLS)}\n"
+                      f"Інтервал: {TIMEFRAME_LABEL}\nНадсилаються лише сигнали; автоматичні угоди не виконуються.")
     engines = {s: SignalEngine(s) for s in SYMBOLS}
     last_heartbeat = {}
     while True:
@@ -378,30 +378,30 @@ def main():
                     engine.maybe_rule1_signal(live)
                     engine.maybe_rule2_signal(live)
                 if not closed:
-                    log.warning("%s | MEXC Ð¿Ð¾ÐºÐ¸ Ð½Ðµ Ð¿Ð¾Ð²ÐµÑÐ½ÑÐ² Ð·Ð°ÐºÑÐ¸ÑÐ¸Ñ ÑÐ²ÑÑÐ¾Ðº %s", symbol, TIMEFRAME_LABEL)
+                    log.warning("%s | MEXC поки не повернув закритих свічок %s", symbol, TIMEFRAME_LABEL)
                     continue
                 added = engine.ingest(closed)
                 latest = closed[-1]
                 if added:
-                    log.info("ÐÐÐÐ ÐÐÐÐ | %s | Ð¾ÑÑÐ¸Ð¼Ð°Ð½Ð¾=%d | Ð´Ð¾Ð´Ð°Ð½Ð¾=%d | Ð¾ÑÑÐ°Ð½Ð½Ñ=%s %s | open=%s close=%s | pending=%d",
+                    log.info("НОВІ ДАНІ | %s | отримано=%d | додано=%d | остання=%s %s | open=%s close=%s | pending=%d",
                              symbol, len(closed), added, utc(latest["ts"]), candle_color(latest),
                              latest["open"], latest["close"], len(engine.pending))
                 elif time.time() - last_heartbeat.get(symbol, 0) >= 60:
                     age = max(0, int(time.time() - (latest["ts"] + TIMEFRAME_SECONDS)))
-                    log.info("ÐÐ'Ð¯ÐÐÐ Ð | %s | Ð¾ÑÑÐ°Ð½Ð½Ñ=%s %s | Ð·Ð°ÑÑÐ¸Ð¼ÐºÐ°=%s Ñ | pending=%d",
+                    log.info("ЗВ'ЯЗОК Є | %s | остання=%s %s | затримка=%s с | pending=%d",
                              symbol, utc(latest["ts"]), candle_color(latest), age, len(engine.pending))
                     last_heartbeat[symbol] = time.time()
             except Exception as exc:
-                log.exception("ÐÐÐÐÐÐÐ Ð¦ÐÐÐÐ£ | %s | %s", symbol, exc)
+                log.exception("ПОМИЛКА ЦИКЛУ | %s | %s", symbol, exc)
         time.sleep(POLL_SECONDS)
 
 if __name__ == "__main__":
     if TEST_MODE:
-        print("Ð¢ÐÐ¡Ð¢ÐÐÐÐ Ð ÐÐÐÐ: ÐÐÐ ÐÐÐÐ ÐÐ£ ÐÐ ÐÐÐÐÐÐ")
-        print("ÐÐ¾Ð½ÐµÑÐ¸:", ", ".join(SYMBOLS))
-        print("ÐÐ½ÑÐµÑÐ²Ð°Ð»:", TIMEFRAME_LABEL, "(Ð½Ð°ÑÐ¸Ð²Ð½Ñ 5m ÑÐ²ÑÑÐºÐ¸)")
-        print("ÐÐ¶ÐµÑÐµÐ»Ð¾: MEXC USDT Perpetual native 5m; API:", API_URL)
-        print("ÐÑÐ°Ð²Ð¸Ð»Ð¾ 1: PRE Ð¿ÑÑÐ»Ñ Ð·Ð°ÐºÑÐ¸ÑÑÑ #8; SIGNAL Ð·Ð° 5 Ñ Ð´Ð¾ Ð·Ð°ÐºÑÐ¸ÑÑÑ #9; ÑÐµÐ·ÑÐ»ÑÑÐ°Ñ #10â#15")
-        print("ÐÑÐ°Ð²Ð¸Ð»Ð¾ 2: PRE Ð½Ð° Ð¿Ð¾ÑÐ°ÑÐºÑ #8; SIGNAL Ð·Ð° 5 ÑÐµÐºÑÐ½Ð´ Ð´Ð¾ Ð·Ð°ÐºÑÐ¸ÑÑÑ #8; ÑÐµÐ·ÑÐ»ÑÑÐ°Ñ #9â#14")
+        print("ТЕСТОВИЙ РЕЖИМ: ПЕРЕВІРКУ ПРОЙДЕНО")
+        print("Монети:", ", ".join(SYMBOLS))
+        print("Інтервал:", TIMEFRAME_LABEL, "(нативні 5m свічки)")
+        print("Джерело: MEXC USDT Perpetual native 5m; API:", API_URL)
+        print("Правило 1: PRE після закриття #8; SIGNAL за 5 с до закриття #9; результат #10–#15")
+        print("Правило 2: PRE на початку #8; SIGNAL за 5 секунд до закриття #8; результат #9–#14")
     else:
         main()
